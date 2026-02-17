@@ -159,6 +159,34 @@ def flatten_json(data: Any, parent: str = "", sep: str = ".") -> Dict[str, Any]:
     rec(data, parent)
     return out
 
+def coerce_amenities(v):
+    out = []
+
+    # Your exact structure: dict of categories -> list[str]
+    if isinstance(v, dict):
+        for _, items in v.items():
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, str) and item.strip():
+                        out.append(item.strip())
+
+    # Also allow list[str] just in case some JSONs differ
+    elif isinstance(v, list):
+        for item in v:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+
+    # de-dupe, preserve order
+    seen = set()
+    deduped = []
+    for a in out:
+        if a not in seen:
+            seen.add(a)
+            deduped.append(a)
+
+    return deduped
+
+
 def detect_title_key(flat: Dict[str, Any]) -> Optional[str]:
     for k, v in flat.items():
         if isinstance(v, str):
@@ -902,10 +930,9 @@ def main():
     readonly_reviews = build_readonly_reviews(flat)
 
     title_val = str(flat.get(title_key, "")) if title_key else ""
-    amenities_val = flat.get(amenities_key, []) if amenities_key else []
-    if not isinstance(amenities_val, list):
-        amenities_val = []
-    amenities_val = [str(x) for x in amenities_val if isinstance(x, (str, int, float))]
+    amenities_raw = data.get("amenities")  # your JSON is nested, don't use flat for this
+    amenities_val = coerce_amenities(amenities_raw)
+
 
     st.header("Editable listing text")
     c1, c2 = st.columns([1, 1], gap="large")
