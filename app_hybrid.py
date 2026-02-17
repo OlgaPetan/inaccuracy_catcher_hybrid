@@ -159,33 +159,6 @@ def flatten_json(data: Any, parent: str = "", sep: str = ".") -> Dict[str, Any]:
     rec(data, parent)
     return out
 
-def coerce_amenities(v):
-    out = []
-
-    # Your exact structure: dict of categories -> list[str]
-    if isinstance(v, dict):
-        for _, items in v.items():
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, str) and item.strip():
-                        out.append(item.strip())
-
-    # Also allow list[str] just in case some JSONs differ
-    elif isinstance(v, list):
-        for item in v:
-            if isinstance(item, str) and item.strip():
-                out.append(item.strip())
-
-    # de-dupe, preserve order
-    seen = set()
-    deduped = []
-    for a in out:
-        if a not in seen:
-            seen.add(a)
-            deduped.append(a)
-
-    return deduped
-
 
 def detect_title_key(flat: Dict[str, Any]) -> Optional[str]:
     for k, v in flat.items():
@@ -228,6 +201,39 @@ def detect_text_keys(flat: Dict[str, Any], min_len: int = 120) -> List[str]:
 PREFERRED_TEXT_NORMAL_KEYS = {
     "summary", "the_space", "guest_access", "other_things_to_note", "description"
 }
+
+def detect_amenities_key_root(data: Dict[str, Any]) -> Optional[str]:
+    # Prefer exact key
+    if isinstance(data.get("amenities"), dict):
+        return "amenities"
+    if isinstance(data.get("Amenities"), dict):
+        return "Amenities"
+
+    # Otherwise, find any top-level key that looks like amenities:
+    # dict of categories -> list[str]
+    for k, v in data.items():
+        if not isinstance(v, dict):
+            continue
+        if "amenit" not in normalize_key(k):
+            continue
+
+        total = 0
+        ok = False
+        for vv in v.values():
+            if isinstance(vv, list):
+                strs = [x for x in vv if isinstance(x, str) and x.strip()]
+                total += len(strs)
+                if strs:
+                    ok = True
+            else:
+                ok = False
+                break
+
+        if ok and total >= 1:
+            return k
+
+    return None
+
 
 def choose_editable_text_keys(flat: Dict[str, Any], title_key: Optional[str], house_rules_key: Optional[str]) -> List[str]:
     preferred = []
@@ -930,9 +936,11 @@ def main():
     readonly_reviews = build_readonly_reviews(flat)
 
     title_val = str(flat.get(title_key, "")) if title_key else ""
-    amenities_raw = data.get("amenities")  # your JSON is nested, don't use flat for this
-    amenities_val = coerce_amenities(amenities_raw)
-
+    
+    amenities_val = flat.get(amenities_key, []) if amenities_key else []
+    if not isinstance(amenities_val, list):
+        amenities_val = []
+    amenities_val = [str(x) for x in amenities_val if isinstance(x, (str, int, float))]
 
     st.header("Editable listing text")
     c1, c2 = st.columns([1, 1], gap="large")
