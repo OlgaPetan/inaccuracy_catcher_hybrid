@@ -97,6 +97,68 @@ def normalize_ws(s: str) -> str:
 def normalize_key(k: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", (k or "").lower()).strip("_")
 
+def _collect_strings(obj):
+    """Recursively collect non-empty strings from dict/list structures."""
+    out = []
+
+    def rec(x):
+        if isinstance(x, str):
+            s = x.strip()
+            if s:
+                out.append(s)
+        elif isinstance(x, list):
+            for i in x:
+                rec(i)
+        elif isinstance(x, dict):
+            for v in x.values():
+                rec(v)
+
+    rec(obj)
+
+    # de-dupe while preserving order
+    seen = set()
+    res = []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            res.append(s)
+    return res
+
+
+def extract_all_amenities(data):
+    """
+    Extract ALL amenities from the JSON, supporting both:
+      - "amenities": [ ... ]
+      - "amenities": { "Family": [...], "Outdoor": [...], ... }
+    Also supports amenities nested deeper.
+    Returns a flat list of amenity strings.
+    """
+    found = []
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                kn = normalize_key(str(k))
+                # Grab ANY amenity-like container, not just exact == "amenities"
+                if "amenit" in kn and isinstance(v, (dict, list)):
+                    found.extend(_collect_strings(v))
+                walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+
+    walk(data)
+
+    # de-dupe while preserving order
+    seen = set()
+    res = []
+    for s in found:
+        if s not in seen:
+            seen.add(s)
+            res.append(s)
+    return res
+
+
 def is_review_key(k: str) -> bool:
     kn = normalize_key(k)
     return ("review" in kn) or ("reviews" in kn)
@@ -174,14 +236,6 @@ def detect_title_key(flat: Dict[str, Any]) -> Optional[str]:
                 cands.append((len(s), k))
     return sorted(cands)[0][1] if cands else None
 
-def detect_amenities_key(flat: Dict[str, Any]) -> Optional[str]:
-    for k, v in flat.items():
-        if normalize_key(k) == "amenities" and isinstance(v, list) and all(isinstance(x, str) for x in v):
-            return k
-    for k, v in flat.items():
-        if isinstance(v, list) and all(isinstance(x, str) for x in v) and "amenit" in normalize_key(k):
-            return k
-    return None
 
 def detect_house_rules_key(flat: Dict[str, Any]) -> Optional[str]:
     for k, v in flat.items():
@@ -201,38 +255,6 @@ def detect_text_keys(flat: Dict[str, Any], min_len: int = 120) -> List[str]:
 PREFERRED_TEXT_NORMAL_KEYS = {
     "summary", "the_space", "guest_access", "other_things_to_note", "description"
 }
-
-def detect_amenities_key_root(data: Dict[str, Any]) -> Optional[str]:
-    # Prefer exact key
-    if isinstance(data.get("amenities"), dict):
-        return "amenities"
-    if isinstance(data.get("Amenities"), dict):
-        return "Amenities"
-
-    # Otherwise, find any top-level key that looks like amenities:
-    # dict of categories -> list[str]
-    for k, v in data.items():
-        if not isinstance(v, dict):
-            continue
-        if "amenit" not in normalize_key(k):
-            continue
-
-        total = 0
-        ok = False
-        for vv in v.values():
-            if isinstance(vv, list):
-                strs = [x for x in vv if isinstance(x, str) and x.strip()]
-                total += len(strs)
-                if strs:
-                    ok = True
-            else:
-                ok = False
-                break
-
-        if ok and total >= 1:
-            return k
-
-    return None
 
 
 def choose_editable_text_keys(flat: Dict[str, Any], title_key: Optional[str], house_rules_key: Optional[str]) -> List[str]:
@@ -929,7 +951,6 @@ def main():
 
 
     title_key = detect_title_key(flat)
-    amenities_key = detect_amenities_key(flat)
     house_rules_key = detect_house_rules_key(flat)
     exclusive_keys = [house_rules_key] if house_rules_key else []
     text_keys = choose_editable_text_keys(flat, title_key=title_key, house_rules_key=house_rules_key)
@@ -937,10 +958,7 @@ def main():
 
     title_val = str(flat.get(title_key, "")) if title_key else ""
     
-    amenities_val = flat.get(amenities_key, []) if amenities_key else []
-    if not isinstance(amenities_val, list):
-        amenities_val = []
-    amenities_val = [str(x) for x in amenities_val if isinstance(x, (str, int, float))]
+    amenities_val = extract_all_amenities(data)
 
     st.header("Editable listing text")
     c1, c2 = st.columns([1, 1], gap="large")
@@ -950,7 +968,9 @@ def main():
         title_edit = st.text_input("Title", value=title_val, key="__title")
 
         st.subheader("Amenities (ground truth)")
-        st.write(amenities_val if amenities_val else "—")
+        st.caption(f"Detected {len(amenities_val)} amenities")
+        safe_df(pd.DataFrame({"amenity": amenities_val})) if amenities_val else st.write("—")
+
 
     with c2:
         edited_texts: Dict[str, str] = {}
